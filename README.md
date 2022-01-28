@@ -18,7 +18,7 @@ extern const bool useCloudRing = false; // if true, ang_res_y and ang_bottom are
 Add parameters of OS1-128.
 ~~~
 // Ouster OS0-128
-extern const string LIDAR_TYPE = "Ouster OS1-128";
+extern const string LIDAR_TYPE = "Ouster OS0-128";
 extern const int N_SCAN = 128;
 extern const int Horizon_SCAN = 1024; //2048
 extern const float ang_res_x = 360.0/float(Horizon_SCAN);
