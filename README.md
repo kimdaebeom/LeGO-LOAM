@@ -21,7 +21,7 @@ extern const string LIDAR_TYPE = "Ouster OS1-128";
 extern const int N_SCAN = 128;
 extern const int Horizon_SCAN = 2048;
 extern const float ang_res_x = 360.0/float(Horizon_SCAN);
-extern const float ang_res_y = 45.0/float(N_SCAN-1);
+extern const float ang_res_y = 90.0/float(N_SCAN-1);
 extern const float ang_bottom = 22.5+0.1;
 extern const int groundScanInd = 15;
 ~~~
