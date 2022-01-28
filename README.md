@@ -1,5 +1,5 @@
 # LeGO-LOAM
-##How to use OS0-128 with LeGO-LOAM
+## How to use OS0-128 with LeGO-LOAM
 
 Upper file is LeGO-LOAM forked file.
 
