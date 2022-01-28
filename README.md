@@ -1,5 +1,35 @@
 # LeGO-LOAM
-How to use OS1-128 with LeGO-LOAM
+##How to use OS1-128 with LeGO-LOAM
 
-~~~// extern const string pointCloudTopic = "/velodyne_points";
-extern const string pointCloudTopic = "/os_cloud_node/points";~~~
+Upper file is LeGO-LOAM forked file.
+
+First of all, you have to edit the utility.h in include file.
+Change topic name of pointcloud2 type message.
+~~~
+// extern const string pointCloudTopic = "/velodyne_points";
+extern const string pointCloudTopic = "/os_cloud_node/points";
+~~~
+
+Modify useCloudRing value.
+~~~
+extern const bool useCloudRing = false; // if true, ang_res_y and ang_bottom are not used
+~~~
+
+Add parameters of OS1-128.
+~~~
+extern const string LIDAR_TYPE = "Ouster OS1-128";
+extern const int N_SCAN = 128;
+extern const int Horizon_SCAN = 2048;
+extern const float ang_res_x = 360.0/float(Horizon_SCAN);
+extern const float ang_res_y = 45.0/float(N_SCAN-1);
+extern const float ang_bottom = 22.5+0.1;
+extern const int groundScanInd = 15;
+~~~
+
+Lastly, you have to edit ImageProjection.cpp in source file.
+uncomment the line of 166.
+~~~
+cloudHeader.stamp = ros::Time::now(); // Ouster lidar users may need to uncomment this line
+~~~
+
+With ROS bag file, Ouster launch, and LeGO-LOAM run.launch file, you can use LeGO-LOAM with your OS1-128 dataset.
