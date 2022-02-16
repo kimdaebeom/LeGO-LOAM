@@ -25,14 +25,9 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
-//
-// This is an implementation of the algorithm described in the following papers:
-//   J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time.
-//     Robotics: Science and Systems Conference (RSS). Berkeley, CA, July 2014.
-//   T. Shan and B. Englot. LeGO-LOAM: Lightweight and Ground-Optimized Lidar Odometry and Mapping on Variable Terrain
-//      IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS). October 2018.
 
 #include "utility.h"
+
 
 class ImageProjection{
 private:
@@ -51,7 +46,6 @@ private:
     ros::Publisher pubOutlierCloud;
 
     pcl::PointCloud<PointType>::Ptr laserCloudIn;
-    pcl::PointCloud<PointXYZIR>::Ptr laserCloudInRing;
 
     pcl::PointCloud<PointType>::Ptr fullCloud; // projected velodyne raw cloud, but saved in the form of 1-D matrix
     pcl::PointCloud<PointType>::Ptr fullInfoCloud; // same as fullCloud, but with intensity - range
@@ -79,7 +73,7 @@ private:
     uint16_t *allPushedIndX; // array for tracking points of a segmented object
     uint16_t *allPushedIndY;
 
-    uint16_t *queueIndX; // array for breadth-first search process of segmentation, for speed
+    uint16_t *queueIndX; // array for breadth-first search process of segmentation
     uint16_t *queueIndY;
 
 public:
@@ -109,7 +103,6 @@ public:
     void allocateMemory(){
 
         laserCloudIn.reset(new pcl::PointCloud<PointType>());
-        laserCloudInRing.reset(new pcl::PointCloud<PointXYZIR>());
 
         fullCloud.reset(new pcl::PointCloud<PointType>());
         fullInfoCloud.reset(new pcl::PointCloud<PointType>());
@@ -163,19 +156,11 @@ public:
     void copyPointCloud(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
 
         cloudHeader = laserCloudMsg->header;
-        cloudHeader.stamp = ros::Time::now(); // Ouster lidar users may need to uncomment this line
+//         cloudHeader.stamp = ros::Time::now(); // Ouster lidar users may need to uncomment this line
         pcl::fromROSMsg(*laserCloudMsg, *laserCloudIn);
         // Remove Nan points
         std::vector<int> indices;
         pcl::removeNaNFromPointCloud(*laserCloudIn, *laserCloudIn, indices);
-        // have "ring" channel in the cloud
-        if (useCloudRing == true){
-            pcl::fromROSMsg(*laserCloudMsg, *laserCloudInRing);
-            if (laserCloudInRing->is_dense == false) {
-                ROS_ERROR("Point cloud is not in dense format, please remove NaN points first!");
-                ros::shutdown();
-            }  
-        }
     }
     
     void cloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
@@ -216,24 +201,24 @@ public:
 
         cloudSize = laserCloudIn->points.size();
 
+        // 모든 포인트들에 대해서 row, col으로 인덱싱
         for (size_t i = 0; i < cloudSize; ++i){
 
             thisPoint.x = laserCloudIn->points[i].x;
             thisPoint.y = laserCloudIn->points[i].y;
             thisPoint.z = laserCloudIn->points[i].z;
             // find the row and column index in the iamge for this point
-            if (useCloudRing == true){
-                rowIdn = laserCloudInRing->points[i].ring;
-            }
-            else{
-                verticalAngle = atan2(thisPoint.z, sqrt(thisPoint.x * thisPoint.x + thisPoint.y * thisPoint.y)) * 180 / M_PI;
-                rowIdn = (verticalAngle + ang_bottom) / ang_res_y;
-            }
+            
+            //각 포인트들과 가장 아래 방향 채널의 포인트가 이루는 각을 y방향 resolution으로 나누어 넘버링
+            verticalAngle = atan2(thisPoint.z, sqrt(thisPoint.x * thisPoint.x + thisPoint.y * thisPoint.y)) * 180 / M_PI;
+            rowIdn = (verticalAngle + ang_bottom) / ang_res_y;
+
             if (rowIdn < 0 || rowIdn >= N_SCAN)
                 continue;
 
+            // 좌측이 y축, 앞이 x축, 위가 z축
+            // LiDAR 정면을 (X축) GRID : Horizon_RESOLUTION / 2로 두겠다.
             horizonAngle = atan2(thisPoint.x, thisPoint.y) * 180 / M_PI;
-
             columnIdn = -round((horizonAngle-90.0)/ang_res_x) + Horizon_SCAN/2;
             if (columnIdn >= Horizon_SCAN)
                 columnIdn -= Horizon_SCAN;
@@ -241,12 +226,13 @@ public:
             if (columnIdn < 0 || columnIdn >= Horizon_SCAN)
                 continue;
 
+            // GRID 안에 값 대입 : 거리 값
             range = sqrt(thisPoint.x * thisPoint.x + thisPoint.y * thisPoint.y + thisPoint.z * thisPoint.z);
-            if (range < sensorMinimumRange)
+            if (range < 0.1)
                 continue;
-            
             rangeMat.at<float>(rowIdn, columnIdn) = range;
 
+            // ???
             thisPoint.intensity = (float)rowIdn + (float)columnIdn / 10000.0;
 
             index = columnIdn  + rowIdn * Horizon_SCAN;
@@ -267,6 +253,8 @@ public:
         for (size_t j = 0; j < Horizon_SCAN; ++j){
             for (size_t i = 0; i < groundScanInd; ++i){
 
+                // lowerInd : 현재 채널에서, 수평한 방향으로 포인트 인덱스
+                // upperInd : lowerInd에서 z방향 바로 위 포인트 인덱스
                 lowerInd = j + ( i )*Horizon_SCAN;
                 upperInd = j + (i+1)*Horizon_SCAN;
 
@@ -277,12 +265,13 @@ public:
                     continue;
                 }
                     
+                // lowerInd에서 upperInd까지 이루는 각도 : angle
                 diffX = fullCloud->points[upperInd].x - fullCloud->points[lowerInd].x;
                 diffY = fullCloud->points[upperInd].y - fullCloud->points[lowerInd].y;
                 diffZ = fullCloud->points[upperInd].z - fullCloud->points[lowerInd].z;
-
                 angle = atan2(diffZ, sqrt(diffX*diffX + diffY*diffY) ) * 180 / M_PI;
 
+                // angle이 theshold를 넘지 못하면 ground로 판단.
                 if (abs(angle - sensorMountAngle) <= 10){
                     groundMat.at<int8_t>(i,j) = 1;
                     groundMat.at<int8_t>(i+1,j) = 1;
@@ -292,6 +281,8 @@ public:
         // extract ground cloud (groundMat == 1)
         // mark entry that doesn't need to label (ground and invalid point) for segmentation
         // note that ground remove is from 0~N_SCAN-1, need rangeMat for mark label matrix for the 16th scan
+
+        // 거리가 매우 먼 포인트와 ground판단되는 포인트들은 invalid로 설정
         for (size_t i = 0; i < N_SCAN; ++i){
             for (size_t j = 0; j < Horizon_SCAN; ++j){
                 if (groundMat.at<int8_t>(i,j) == 1 || rangeMat.at<float>(i,j) == FLT_MAX){
@@ -299,6 +290,7 @@ public:
                 }
             }
         }
+
         if (pubGroundCloud.getNumSubscribers() != 0){
             for (size_t i = 0; i <= groundScanInd; ++i){
                 for (size_t j = 0; j < Horizon_SCAN; ++j){
@@ -315,6 +307,9 @@ public:
             for (size_t j = 0; j < Horizon_SCAN; ++j)
                 if (labelMat.at<int>(i,j) == 0)
                     labelComponents(i, j);
+
+        // label: 999999 -> invalid
+        // label: over 0 -> valid
 
         int sizeOfSegCloud = 0;
         // extract segmented cloud for lidar odometry
@@ -350,11 +345,11 @@ public:
                     ++sizeOfSegCloud;
                 }
             }
-
             segMsg.endRingIndex[i] = sizeOfSegCloud-1 - 5;
         }
-        
+
         // extract segmented cloud for visualization
+        // 해당토픽을 subscribe하지 않으면, 처리하지 않고 publish안함(아래코드)
         if (pubSegmentedCloudPure.getNumSubscribers() != 0){
             for (size_t i = 0; i < N_SCAN; ++i){
                 for (size_t j = 0; j < Horizon_SCAN; ++j){
@@ -408,6 +403,9 @@ public:
                 if (labelMat.at<int>(thisIndX, thisIndY) != 0)
                     continue;
 
+
+                //두포인트의 range 값
+
                 d1 = std::max(rangeMat.at<float>(fromIndX, fromIndY), 
                               rangeMat.at<float>(thisIndX, thisIndY));
                 d2 = std::min(rangeMat.at<float>(fromIndX, fromIndY), 
@@ -418,6 +416,7 @@ public:
                 else
                     alpha = segmentAlphaY;
 
+                // beta값
                 angle = atan2(d2*sin(alpha), (d1 -d2*cos(alpha)));
 
                 if (angle > segmentTheta){
@@ -439,7 +438,7 @@ public:
 
         // check if this segment is valid
         bool feasibleSegment = false;
-        if (allPushedIndSize >= 30)
+        if (allPushedIndSize >= 30)             //갯수가 작은 segment삭제
             feasibleSegment = true;
         else if (allPushedIndSize >= segmentValidPointNum){
             int lineCount = 0;

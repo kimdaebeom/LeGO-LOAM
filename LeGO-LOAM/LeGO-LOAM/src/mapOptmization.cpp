@@ -59,6 +59,7 @@ private:
     noiseModel::Diagonal::shared_ptr priorNoise;
     noiseModel::Diagonal::shared_ptr odometryNoise;
     noiseModel::Diagonal::shared_ptr constraintNoise;
+    noiseModel::Base::shared_ptr robustNoiseModel;
 
     ros::NodeHandle nh;
 
@@ -76,6 +77,8 @@ private:
     ros::Subscriber subOutlierCloudLast;
     ros::Subscriber subLaserOdometry;
     ros::Subscriber subImu;
+
+
 
     nav_msgs::Odometry odomAftMapped;
     tf::StampedTransform aftMappedTrans;
@@ -169,6 +172,8 @@ private:
     bool newLaserOdometry;
     bool newLaserCloudOutlierLast;
 
+    bool ispcd;
+
 
     float transformLast[6];
     float transformSum[6];
@@ -231,6 +236,8 @@ public:
 		parameters.relinearizeSkip = 1;
     	isam = new ISAM2(parameters);
 
+        ispcd=false;
+
         pubKeyPoses = nh.advertise<sensor_msgs::PointCloud2>("/key_pose_origin", 2);
         pubLaserCloudSurround = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_surround", 2);
         pubOdomAftMapped = nh.advertise<nav_msgs::Odometry> ("/aft_mapped_to_init", 5);
@@ -240,6 +247,7 @@ public:
         subOutlierCloudLast = nh.subscribe<sensor_msgs::PointCloud2>("/outlier_cloud_last", 2, &mapOptimization::laserCloudOutlierLastHandler, this);
         subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/laser_odom_to_init", 5, &mapOptimization::laserOdometryHandler, this);
         subImu = nh.subscribe<sensor_msgs::Imu> (imuTopic, 50, &mapOptimization::imuHandler, this);
+
 
         pubHistoryKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/history_cloud", 2);
         pubIcpKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/corrected_cloud", 2);
@@ -345,9 +353,10 @@ public:
         }
 
         gtsam::Vector Vector6(6);
-        Vector6 << 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-6;
+        Vector6 << 1e-6, 1e-6, 1e-10, 1e-12, 1e-12, 1e-6;
         priorNoise = noiseModel::Diagonal::Variances(Vector6);
         odometryNoise = noiseModel::Diagonal::Variances(Vector6);
+
 
         matA0 = cv::Mat (5, 3, CV_32F, cv::Scalar::all(0));
         matB0 = cv::Mat (5, 1, CV_32F, cv::Scalar::all(-1));
@@ -651,6 +660,32 @@ public:
         imuPitch[imuPointerLast] = pitch;
     }
 
+    void saveMapService()
+    {
+      // create directory and remove old files;
+      int unused = system((std::string("exec rm -r ") + fileDirectory).c_str());
+      unused = system((std::string("mkdir -p ") + fileDirectory).c_str());
+      // save key frame transformations
+      pcl::io::savePCDFileBinary(fileDirectory + "/trajectory.pcd", *cloudKeyPoses3D);
+      pcl::io::savePCDFileBinary(fileDirectory + "/transformations.pcd", *cloudKeyPoses6D);
+      // extract global point cloud map
+      pcl::PointCloud<PointType>::Ptr globalCornerCloud(new pcl::PointCloud<PointType>());
+      pcl::PointCloud<PointType>::Ptr globalCornerCloudDS(new pcl::PointCloud<PointType>());
+      pcl::PointCloud<PointType>::Ptr globalSurfCloud(new pcl::PointCloud<PointType>());
+      pcl::PointCloud<PointType>::Ptr globalSurfCloudDS(new pcl::PointCloud<PointType>());
+      pcl::PointCloud<PointType>::Ptr globalMapCloud(new pcl::PointCloud<PointType>());
+      for (int i = 0; i < (int)cloudKeyPoses3D->size(); i++) {
+          *globalCornerCloud += *transformPointCloud(cornerCloudKeyFrames[i],  &cloudKeyPoses6D->points[i]);
+          *globalSurfCloud   += *transformPointCloud(surfCloudKeyFrames[i],    &cloudKeyPoses6D->points[i]);
+      }
+
+      // save global point cloud map
+      *globalMapCloud += *globalCornerCloud;
+      *globalMapCloud += *globalSurfCloud;
+
+      pcl::io::savePCDFileBinary(fileDirectory + "/GlobalMap.pcd", *globalMapCloud);
+    }
+
     void publishTF(){
 
         geometry_msgs::Quaternion geoQuat = tf::createQuaternionMsgFromRollPitchYaw
@@ -727,7 +762,8 @@ public:
             rate.sleep();
             publishGlobalMap();
         }
-        // save final point cloud
+        saveMapService();
+        /*
         pcl::io::savePCDFileASCII(fileDirectory+"finalCloud.pcd", *globalMapKeyFramesDS);
 
         string cornerMapString = "/tmp/cornerMap.pcd";
@@ -752,11 +788,10 @@ public:
 
         pcl::io::savePCDFileASCII(fileDirectory+"cornerMap.pcd", *cornerMapCloudDS);
         pcl::io::savePCDFileASCII(fileDirectory+"surfaceMap.pcd", *surfaceMapCloudDS);
-        pcl::io::savePCDFileASCII(fileDirectory+"trajectory.pcd", *cloudKeyPoses3D);
+        pcl::io::savePCDFileASCII(fileDirectory+"trajectory.pcd", *cloudKeyPoses3D);*/
     }
 
     void publishGlobalMap(){
-
         if (pubLaserCloudSurround.getNumSubscribers() == 0)
             return;
 
@@ -771,8 +806,10 @@ public:
         kdtreeGlobalMap->radiusSearch(currentRobotPosPoint, globalMapVisualizationSearchRadius, pointSearchIndGlobalMap, pointSearchSqDisGlobalMap, 0);
         mtx.unlock();
 
+
         for (int i = 0; i < pointSearchIndGlobalMap.size(); ++i)
           globalMapKeyPoses->points.push_back(cloudKeyPoses3D->points[pointSearchIndGlobalMap[i]]);
+
 	    // downsample near selected key frames
         downSizeFilterGlobalMapKeyPoses.setInputCloud(globalMapKeyPoses);
         downSizeFilterGlobalMapKeyPoses.filter(*globalMapKeyPosesDS);
@@ -783,6 +820,7 @@ public:
 			*globalMapKeyFrames += *transformPointCloud(surfCloudKeyFrames[thisKeyInd],    &cloudKeyPoses6D->points[thisKeyInd]);
 			*globalMapKeyFrames += *transformPointCloud(outlierCloudKeyFrames[thisKeyInd], &cloudKeyPoses6D->points[thisKeyInd]);
         }
+
 	    // downsample visualized points
         downSizeFilterGlobalMapKeyFrames.setInputCloud(globalMapKeyFrames);
         downSizeFilterGlobalMapKeyFrames.filter(*globalMapKeyFramesDS);
@@ -798,6 +836,17 @@ public:
         globalMapKeyFrames->clear();
         // globalMapKeyFramesDS->clear();     
     }
+
+
+
+
+
+
+
+
+
+
+
 
     void loopClosureThread(){
 
@@ -823,42 +872,46 @@ public:
         std::vector<float> pointSearchSqDisLoop;
         kdtreeHistoryKeyPoses->setInputCloud(cloudKeyPoses3D);
         kdtreeHistoryKeyPoses->radiusSearch(currentRobotPosPoint, historyKeyframeSearchRadius, pointSearchIndLoop, pointSearchSqDisLoop, 0);
-        
         closestHistoryFrameID = -1;
-        for (int i = 0; i < pointSearchIndLoop.size(); ++i){
+
+        //여기 코드 수정하는 것이 좋을 듯
+
+        for (int i = 0; i < pointSearchIndLoop.size(); ++i){    //loop size 잘 뜨고있음
             int id = pointSearchIndLoop[i];
-            if (abs(cloudKeyPoses6D->points[id].time - timeLaserOdometry) > 30.0){
+            if (abs(cloudKeyPoses6D->points[id].time - timeLaserOdometry) > 30){
                 closestHistoryFrameID = id;
                 break;
             }
         }
-        if (closestHistoryFrameID == -1){
+        if (closestHistoryFrameID == -1){   // if문에 들어감.... loop closure detect를 못하게 됨... why??
             return false;
         }
-        // save latest key frames
-        latestFrameIDLoopCloure = cloudKeyPoses3D->points.size() - 1;
-        *latestSurfKeyFrameCloud += *transformPointCloud(cornerCloudKeyFrames[latestFrameIDLoopCloure], &cloudKeyPoses6D->points[latestFrameIDLoopCloure]);
-        *latestSurfKeyFrameCloud += *transformPointCloud(surfCloudKeyFrames[latestFrameIDLoopCloure],   &cloudKeyPoses6D->points[latestFrameIDLoopCloure]);
+        else{
+            // save latest key frames
+            latestFrameIDLoopCloure = cloudKeyPoses3D->points.size() - 1;
+            *latestSurfKeyFrameCloud += *transformPointCloud(cornerCloudKeyFrames[latestFrameIDLoopCloure], &cloudKeyPoses6D->points[latestFrameIDLoopCloure]);
+            *latestSurfKeyFrameCloud += *transformPointCloud(surfCloudKeyFrames[latestFrameIDLoopCloure],   &cloudKeyPoses6D->points[latestFrameIDLoopCloure]);
 
-        pcl::PointCloud<PointType>::Ptr hahaCloud(new pcl::PointCloud<PointType>());
-        int cloudSize = latestSurfKeyFrameCloud->points.size();
-        for (int i = 0; i < cloudSize; ++i){
-            if ((int)latestSurfKeyFrameCloud->points[i].intensity >= 0){
-                hahaCloud->push_back(latestSurfKeyFrameCloud->points[i]);
+            pcl::PointCloud<PointType>::Ptr hahaCloud(new pcl::PointCloud<PointType>());
+            int cloudSize = latestSurfKeyFrameCloud->points.size();
+            for (int i = 0; i < cloudSize; ++i){
+                if ((int)latestSurfKeyFrameCloud->points[i].intensity >= 0){
+                    hahaCloud->push_back(latestSurfKeyFrameCloud->points[i]);
+                }
             }
-        }
-        latestSurfKeyFrameCloud->clear();
-        *latestSurfKeyFrameCloud = *hahaCloud;
-	   // save history near key frames
-        for (int j = -historyKeyframeSearchNum; j <= historyKeyframeSearchNum; ++j){
-            if (closestHistoryFrameID + j < 0 || closestHistoryFrameID + j > latestFrameIDLoopCloure)
-                continue;
-            *nearHistorySurfKeyFrameCloud += *transformPointCloud(cornerCloudKeyFrames[closestHistoryFrameID+j], &cloudKeyPoses6D->points[closestHistoryFrameID+j]);
-            *nearHistorySurfKeyFrameCloud += *transformPointCloud(surfCloudKeyFrames[closestHistoryFrameID+j],   &cloudKeyPoses6D->points[closestHistoryFrameID+j]);
-        }
+            latestSurfKeyFrameCloud->clear();
+            *latestSurfKeyFrameCloud = *hahaCloud;
+        // save history near key frames
+            for (int j = -historyKeyframeSearchNum; j <= historyKeyframeSearchNum; ++j){
+                if (closestHistoryFrameID + j < 0 || closestHistoryFrameID + j > latestFrameIDLoopCloure)
+                    continue;
+                *nearHistorySurfKeyFrameCloud += *transformPointCloud(cornerCloudKeyFrames[closestHistoryFrameID+j], &cloudKeyPoses6D->points[closestHistoryFrameID+j]);
+                *nearHistorySurfKeyFrameCloud += *transformPointCloud(surfCloudKeyFrames[closestHistoryFrameID+j],   &cloudKeyPoses6D->points[closestHistoryFrameID+j]);
+            }
 
-        downSizeFilterHistoryKeyFrames.setInputCloud(nearHistorySurfKeyFrameCloud);
-        downSizeFilterHistoryKeyFrames.filter(*nearHistorySurfKeyFrameCloudDS);
+            downSizeFilterHistoryKeyFrames.setInputCloud(nearHistorySurfKeyFrameCloud);
+            downSizeFilterHistoryKeyFrames.filter(*nearHistorySurfKeyFrameCloudDS);
+        }
         // publish history near key frames
         if (pubHistoryKeyFrames.getNumSubscribers() != 0){
             sensor_msgs::PointCloud2 cloudMsgTemp;
@@ -874,11 +927,11 @@ public:
 
     void performLoopClosure(){
 
-        if (cloudKeyPoses3D->points.empty() == true)
+        if (cloudKeyPoses3D->points.empty() == true)    //empty() == false 확인
             return;
         // try to find close key frame if there are any
         if (potentialLoopFlag == false){
-
+            
             if (detectLoopClosure() == true){
                 potentialLoopFlag = true; // find some key frames that is old enough or close enough for loop closure
                 timeSaveFirstCurrentScanForLoopClosure = timeLaserOdometry;
@@ -889,59 +942,76 @@ public:
         // reset the flag first no matter icp successes or not
         potentialLoopFlag = false;
         // ICP Settings
-        pcl::IterativeClosestPoint<PointType, PointType> icp;
+        pcl::GeneralizedIterativeClosestPoint<PointType, PointType> icp;
         icp.setMaxCorrespondenceDistance(100);
         icp.setMaximumIterations(100);
         icp.setTransformationEpsilon(1e-6);
         icp.setEuclideanFitnessEpsilon(1e-6);
-        icp.setRANSACIterations(0);
+        icp.setRANSACIterations(0);  //원래 0
+
+
         // Align clouds
         icp.setInputSource(latestSurfKeyFrameCloud);
         icp.setInputTarget(nearHistorySurfKeyFrameCloudDS);
+
+
         pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
         icp.align(*unused_result);
+        
 
         if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore)
             return;
-        // publish corrected cloud
-        if (pubIcpKeyFrames.getNumSubscribers() != 0){
-            pcl::PointCloud<PointType>::Ptr closed_cloud(new pcl::PointCloud<PointType>());
-            pcl::transformPointCloud (*latestSurfKeyFrameCloud, *closed_cloud, icp.getFinalTransformation());
-            sensor_msgs::PointCloud2 cloudMsgTemp;
-            pcl::toROSMsg(*closed_cloud, cloudMsgTemp);
-            cloudMsgTemp.header.stamp = ros::Time().fromSec(timeLaserOdometry);
-            cloudMsgTemp.header.frame_id = "/camera_init";
-            pubIcpKeyFrames.publish(cloudMsgTemp);
-        }   
-        /*
-        	get pose constraint
-        	*/
-        float x, y, z, roll, pitch, yaw;
-        Eigen::Affine3f correctionCameraFrame;
-        correctionCameraFrame = icp.getFinalTransformation(); // get transformation in camera frame (because points are in camera frame)
-        pcl::getTranslationAndEulerAngles(correctionCameraFrame, x, y, z, roll, pitch, yaw);
-        Eigen::Affine3f correctionLidarFrame = pcl::getTransformation(z, x, y, yaw, roll, pitch);
-        // transform from world origin to wrong pose
-        Eigen::Affine3f tWrong = pclPointToAffine3fCameraToLidar(cloudKeyPoses6D->points[latestFrameIDLoopCloure]);
-        // transform from world origin to corrected pose
-        Eigen::Affine3f tCorrect = correctionLidarFrame * tWrong; // pre-multiplying -> successive rotation about a fixed frame
-        pcl::getTranslationAndEulerAngles (tCorrect, x, y, z, roll, pitch, yaw);
-        gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
-        gtsam::Pose3 poseTo = pclPointTogtsamPose3(cloudKeyPoses6D->points[closestHistoryFrameID]);
-        gtsam::Vector Vector6(6);
-        float noiseScore = icp.getFitnessScore();
-        Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
-        constraintNoise = noiseModel::Diagonal::Variances(Vector6);
-        /* 
-        	add constraints
-        	*/
-        std::lock_guard<std::mutex> lock(mtx);
-        gtSAMgraph.add(BetweenFactor<Pose3>(latestFrameIDLoopCloure, closestHistoryFrameID, poseFrom.between(poseTo), constraintNoise));
-        isam->update(gtSAMgraph);
-        isam->update();
-        gtSAMgraph.resize(0);
+        else
+        {
+            // publish corrected cloud
+            if (pubIcpKeyFrames.getNumSubscribers() != 0){
+                pcl::PointCloud<PointType>::Ptr closed_cloud(new pcl::PointCloud<PointType>());
+                pcl::transformPointCloud (*latestSurfKeyFrameCloud, *closed_cloud, icp.getFinalTransformation());
+                sensor_msgs::PointCloud2 cloudMsgTemp;
+                pcl::toROSMsg(*closed_cloud, cloudMsgTemp);
+                cloudMsgTemp.header.stamp = ros::Time().fromSec(timeLaserOdometry);
+                cloudMsgTemp.header.frame_id = "/camera_init";
+                pubIcpKeyFrames.publish(cloudMsgTemp);
+            }   
+            /*
+                get pose constraint
+                */
+            float x, y, z, roll, pitch, yaw;
+            Eigen::Affine3f correctionCameraFrame;
+            correctionCameraFrame = icp.getFinalTransformation(); // get transformation in camera frame (because points are in camera frame)
+            pcl::getTranslationAndEulerAngles(correctionCameraFrame, x, y, z, roll, pitch, yaw);
+            Eigen::Affine3f correctionLidarFrame = pcl::getTransformation(z, x, y, yaw, roll, pitch);
+            // transform from world origin to wrong pose
+            Eigen::Affine3f tWrong = pclPointToAffine3fCameraToLidar(cloudKeyPoses6D->points[latestFrameIDLoopCloure]);
+            // transform from world origin to corrected pose
+            Eigen::Affine3f tCorrect = correctionLidarFrame * tWrong; // pre-multiplying -> successive rotation about a fixed frame
+            pcl::getTranslationAndEulerAngles (tCorrect, x, y, z, roll, pitch, yaw);
+            gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
+            gtsam::Pose3 poseTo = pclPointTogtsamPose3(cloudKeyPoses6D->points[closestHistoryFrameID]);
+            gtsam::Vector Vector6(6);
 
-        aLoopIsClosed = true;
+            float noiseScore = 0.5; //icp.getFitnessScore();
+            float noise = 0.0001;
+            
+
+            Vector6 << noiseScore, noiseScore, noise, noise, noise, noiseScore;
+            constraintNoise = noiseModel::Diagonal::Variances(Vector6);
+
+            robustNoiseModel = gtsam::noiseModel::Robust::Create(
+                gtsam::noiseModel::mEstimator::DCS::Create(1), // optional: replacing Cauchy by DCS or GemanMcClure
+                gtsam::noiseModel::Diagonal::Variances(Vector6)
+            );
+            /* 
+                add constraints
+                */
+            std::lock_guard<std::mutex> lock(mtx);
+            gtSAMgraph.add(BetweenFactor<Pose3>(latestFrameIDLoopCloure, closestHistoryFrameID, poseFrom.between(poseTo), robustNoiseModel));
+            isam->update(gtSAMgraph);
+            isam->update();
+            gtSAMgraph.resize(0);
+
+            aLoopIsClosed = true;
+        }
     }
 
     Pose3 pclPointTogtsamPose3(PointTypePose thisPoint){ // camera frame to lidar frame
@@ -1178,7 +1248,7 @@ public:
         for (int i = 0; i < laserCloudSurfTotalLastDSNum; i++) {
             pointOri = laserCloudSurfTotalLastDS->points[i];
             pointAssociateToMap(&pointOri, &pointSel); 
-            kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
+            kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);   //knn algorithm
 
             if (pointSearchSqDis[4] < 1.0) {
                 for (int j = 0; j < 5; j++) {
@@ -1333,7 +1403,7 @@ public:
             kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMapDS);
             kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMapDS);
 
-            for (int iterCount = 0; iterCount < 10; iterCount++) {
+            for (int iterCount = 0; iterCount < 30; iterCount++) {
 
                 laserCloudOri->clear();
                 coeffSel->clear();

@@ -1171,7 +1171,7 @@ public:
 
                     float pointSqDis, minPointSqDis2 = nearestFeatureSearchSqDist, minPointSqDis3 = nearestFeatureSearchSqDist;
                     for (int j = closestPointInd + 1; j < surfPointsFlatNum; j++) {
-                        if (int(laserCloudSurfLast->points[j].intensity) > closestPointScan + 2.5) {
+                        if (int(laserCloudSurfLast->points[j].intensity) > closestPointScan + 1.5) {
                             break;
                         }
 
@@ -1195,7 +1195,7 @@ public:
                         }
                     }
                     for (int j = closestPointInd - 1; j >= 0; j--) {
-                        if (int(laserCloudSurfLast->points[j].intensity) < closestPointScan - 2.5) {
+                        if (int(laserCloudSurfLast->points[j].intensity) < closestPointScan - 1.5) {
                             break;
                         }
 
