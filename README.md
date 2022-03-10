@@ -34,3 +34,16 @@ cloudHeader.stamp = ros::Time::now(); // Ouster lidar users may need to uncommen
 ~~~
 
 With ROS bag file, Ouster launch, and LeGO-LOAM run.launch file, you can use LeGO-LOAM with your OS1-128 dataset.
+
+</br>
+
+- Add parameters of HDL-64E for KITTI dataset.
+~~~
+// HDL-64E
+extern const int N_SCAN = 64;
+extern const int Horizon_SCAN = 1800;
+extern const float ang_res_x = 360.0/float(Horizon_SCAN);
+extern const float ang_res_y = 26.9/float(N_SCAN-1);
+extern const float ang_bottom = 25;
+extern const int groundScanInd = 30;
+~~~
